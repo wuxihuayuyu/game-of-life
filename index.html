@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Game of Life · 生命游戏</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --accent: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+  }
+  header { margin: 20px 0 8px; text-align: center; }
+  h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  .sub { font-size: 13px; color: #8b949e; margin-top: 4px; }
+  canvas {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: crosshair;
+    background: var(--bg);
+    max-width: 96vw;
+    height: auto;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 14px 0;
+    max-width: 96vw;
+  }
+  button {
+    background: #21262d;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 600; }
+  label { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  input[type=range] { width: 120px; }
+  .stats { font-size: 13px; color: #8b949e; font-variant-numeric: tabular-nums; min-width: 180px; text-align: center; }
+  .hint { font-size: 12px; color: #6e7681; margin-bottom: 20px; text-align: center; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Game of Life · 生命游戏</h1>
+  <div class="sub">John Conway (1970) 的元胞自动机</div>
+</header>
+
+<canvas id="board"></canvas>
+
+<div class="controls">
+  <button id="toggle" class="primary">开始</button>
+  <button id="step">单步</button>
+  <button id="random">随机</button>
+  <button id="clear">清空</button>
+  <label>速度
+    <input id="speed" type="range" min="1" max="30" value="10">
+    <span id="speedVal">10</span> fps
+  </label>
+  <div class="stats" id="stats">代数 0 · 存活 0</div>
+</div>
+
+<div class="hint">
+  鼠标左键:绘制活细胞 · 按住拖动可连续绘制<br>
+  鼠标右键 或 Shift + 左键:擦除 · 空格:开始/暂停 · S:单步 · R:随机 · C:清空
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  const toggleBtn = document.getElementById("toggle");
+  const stepBtn = document.getElementById("step");
+  const randomBtn = document.getElementById("random");
+  const clearBtn = document.getElementById("clear");
+  const speedInput = document.getElementById("speed");
+  const speedVal = document.getElementById("speedVal");
+  const statsEl = document.getElementById("stats");
+
+  const CELL = 10;
+  const COLS = 80;
+  const ROWS = 50;
+  canvas.width = COLS * CELL;
+  canvas.height = ROWS * CELL;
+
+  let grid = createGrid();
+  let next = createGrid();
+  let generation = 0;
+  let running = false;
+  let lastTick = 0;
+  let painting = null; // 1 = 绘制, 0 = 擦除, null = 未按下
+
+  function createGrid() {
+    return Array.from({ length: ROWS }, () => new Uint8Array(COLS));
+  }
+
+  function randomize(density = 0.3) {
+    for (let y = 0; y < ROWS; y++)
+      for (let x = 0; x < COLS; x++)
+        grid[y][x] = Math.random() < density ? 1 : 0;
+    generation = 0;
+    draw();
+  }
+
+  function clearAll() {
+    for (let y = 0; y < ROWS; y++) grid[y].fill(0);
+    generation = 0;
+    running = false;
+    updateButton();
+    draw();
+  }
+
+  function countNeighbors(x, y) {
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        // 边界环绕(环形世界)
+        const nx = (x + dx + COLS) % COLS;
+        const ny = (y + dy + ROWS) % ROWS;
+        n += grid[ny][nx];
+      }
+    }
+    return n;
+  }
+
+  function step() {
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const alive = grid[y][x];
+        const n = countNeighbors(x, y);
+        // 规则:活细胞 2~3 个邻居存活;死细胞恰好 3 个邻居复活
+        next[y][x] = alive ? (n === 2 || n === 3 ? 1 : 0) : (n === 3 ? 1 : 0);
+      }
+    }
+    [grid, next] = [next, grid];
+    generation++;
+    draw();
+  }
+
+  function population() {
+    let p = 0;
+    for (let y = 0; y < ROWS; y++)
+      for (let x = 0; x < COLS; x++) p += grid[y][x];
+    return p;
+  }
+
+  function draw() {
+    ctx.fillStyle = "#0d1117";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 网格线
+    ctx.strokeStyle = "#21262d";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= COLS; x++) {
+      ctx.moveTo(x * CELL + 0.5, 0);
+      ctx.lineTo(x * CELL + 0.5, canvas.height);
+    }
+    for (let y = 0; y <= ROWS; y++) {
+      ctx.moveTo(0, y * CELL + 0.5);
+      ctx.lineTo(canvas.width, y * CELL + 0.5);
+    }
+    ctx.stroke();
+
+    // 活细胞
+    ctx.fillStyle = "#3fb950";
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        if (grid[y][x]) ctx.fillRect(x * CELL + 1, y * CELL + 1, CELL - 2, CELL - 2);
+      }
+    }
+
+    statsEl.textContent = `代数 ${generation} · 存活 ${population()}`;
+  }
+
+  function updateButton() {
+    toggleBtn.textContent = running ? "暂停" : "开始";
+  }
+
+  function toggleRun() {
+    running = !running;
+    updateButton();
+    lastTick = performance.now();
+  }
+
+  function cellFromEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width) / CELL);
+    const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height) / CELL);
+    if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return null;
+    return { x, y };
+  }
+
+  function paintAt(e, value) {
+    const c = cellFromEvent(e);
+    if (!c) return;
+    if (grid[c.y][c.x] !== value) {
+      grid[c.y][c.x] = value;
+      draw();
+    }
+  }
+
+  // 鼠标交互
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener("mousedown", (e) => {
+    if (e.button === 2 || e.shiftKey) painting = 0;
+    else if (e.button === 0) painting = 1;
+    else return;
+    paintAt(e, painting);
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (painting === null) return;
+    paintAt(e, painting);
+  });
+  window.addEventListener("mouseup", () => { painting = null; });
+
+  // 按钮
+  toggleBtn.addEventListener("click", toggleRun);
+  stepBtn.addEventListener("click", () => { if (!running) step(); });
+  randomBtn.addEventListener("click", () => randomize());
+  clearBtn.addEventListener("click", clearAll);
+
+  speedInput.addEventListener("input", () => {
+    speedVal.textContent = speedInput.value;
+  });
+
+  // 键盘
+  window.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT") return;
+    switch (e.key) {
+      case " ": e.preventDefault(); toggleRun(); break;
+      case "s": case "S": if (!running) step(); break;
+      case "r": case "R": randomize(); break;
+      case "c": case "C": clearAll(); break;
+    }
+  });
+
+  // 主循环
+  function loop(now) {
+    if (running) {
+      const interval = 1000 / Number(speedInput.value);
+      if (now - lastTick >= interval) {
+        lastTick = now;
+        step();
+      }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  // 初始放置一个滑翔机,打开页面即可看到演化效果
+  function seedGlider() {
+    const pattern = [
+      [1, 0], [2, 1], [0, 2], [1, 2], [2, 2]
+    ];
+    const ox = 5, oy = 5;
+    for (const [dx, dy] of pattern) grid[oy + dy][ox + dx] = 1;
+  }
+
+  seedGlider();
+  draw();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
